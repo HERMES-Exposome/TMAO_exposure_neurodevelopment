@@ -1,0 +1,202 @@
+# ===================================================================================================================================================
+# Epidemiological associations between childhood urinary metabolites (cross-sectional) and child behavioural problems and cognition
+# Purpose: Generate results table for EWAS (Exposure-Wide Association Studies) between childhood urinary metabolites and neurodevelopmental outcomes
+# Requirements: dplyr, ggplot2, broom, readxl, lmtest
+# ===================================================================================================================================================
+
+
+# Load libraries
+library(dplyr)
+library(broom)
+library(ggplot2)
+library(readxl)
+library(lmtest)
+
+
+# Load data
+load("data/merg_neuro_metab_SUB_exp4.RData")
+metabolite_categories <- read_xlsx("data/metabolite_categories.xlsx")
+
+
+# Cognitive outcomes
+outcomes<-c("hs_dnumeros2",
+            "hs_dnumeros3",
+            "hs_hitrtse",
+            "hs_correct_raven",
+            "hs_Gen_Int",
+            "hs_Gen_Ext",
+            "hs_Gen_Tot",
+            "hs_ADHD_raw")
+
+### make z-scores to the sqrt outcomes
+
+# ADHD
+mean_adhd_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_ADHD_raw_sqrt,na.rm=T)
+SD_adhd_sqrt<-sd(merg_neuro_metab_SUB_exp4$hs_ADHD_raw_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp4$hs_ADHD_raw_zscores<-(merg_neuro_metab_SUB_exp4$hs_ADHD_raw_sqrt-mean_adhd_sqrt)/SD_adhd_sqrt
+
+# Gen Int
+mean_GENINT_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Int_sqrt,na.rm=T)
+SD_GENINT_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Int_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp4$hs_Gen_Int_zscores<-(merg_neuro_metab_SUB_exp4$hs_Gen_Int_sqrt-mean_GENINT_sqrt)/SD_GENINT_sqrt
+
+# Gen Ext
+mean_GENext_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Ext_sqrt,na.rm=T)
+SD_GENext_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Ext_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp4$hs_Gen_Ext_zscores<-(merg_neuro_metab_SUB_exp4$hs_Gen_Ext_sqrt-mean_GENext_sqrt)/SD_GENext_sqrt
+
+# Gen Tot
+mean_GENTot_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Tot_sqrt,na.rm=T)
+SD_GETot_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Tot_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp4$hs_Gen_Tot_zscores<-(merg_neuro_metab_SUB_exp4$hs_Gen_Tot_sqrt-mean_GENTot_sqrt)/SD_GETot_sqrt
+
+
+# Data to use for linear regression
+data <- merg_neuro_metab_SUB_exp4
+
+# Add PUFA variable
+pufa <- read_excel("data/pufa.xlsx")
+pufa <- as.data.frame(pufa)
+pufa <- pufa %>% rename("PUFA" = "PUFA..PC.")
+
+# Merge by HelixID
+data <- merge(data, pufa, by = "HelixID", all.x = TRUE)
+
+# Cognitive outcomes
+outcomes_trans<-c(outcomes[1:5],paste0(outcomes[6:9],"_zscores"))
+
+# MAIN MODEL
+# Confounders MAIN
+confounders <- c("hs_child_age_days","h_edumc", "Centre")
+
+# FURTHER ADJUSTED MODEL
+# Confounders FU
+#confounders<-c("hs_child_age_days", "h_edumc", "Centre", "PUFA")
+
+
+metabolites <- unique(metabolite_categories$metabolite)
+
+# Compute Effective Number of Tests
+compute_ENT <- function(data_ENT) {
+  cor_matrix <- cor(data_ENT, use = "pairwise.complete.obs") #Compute the correlation matrix
+  eigen_values <- eigen(cor_matrix)$values  #Perform eigenvalue decomposition
+  ENT <- sum(pmin(eigen_values, 1)) #Calculate the effective number of tests
+  return(ENT)
+}
+
+ENT_metabolites <- compute_ENT(data %>% select(all_of(metabolites)))
+ENT_outcomes <- compute_ENT(data %>% select(all_of(outcomes_trans)))
+corrected_pval_thresh <- 0.05/(ENT_metabolites*ENT_outcomes)
+
+
+results_df <- data.frame()
+results_male_df <- data.frame()
+results_female_df <- data.frame()
+
+# Iterate on cognitive outcomes
+for (outcome in outcomes_trans) {
+  print(paste0("The outcome is: ",outcome))
+  
+  # Iterate on contaminants
+  for (metabolite in metabolites) {
+    print(paste0("The metabolite is ", metabolite))
+    
+    
+    # Remove participants with NA value in the outcome
+    filtered_data <- data %>%
+      filter(!is.na(.[[outcome]]))
+    
+    # Number of participants with non NA values for that outcome (= sample size)
+    n <- nrow(filtered_data)
+    
+    formula <- paste(outcome, "~", metabolite, " + ", paste(confounders, collapse = " + "))
+    
+    model <- lm(formula, data = filtered_data)
+    
+    results <- tidy(model) %>%
+      mutate(outcome = outcome,
+             metabolite = metabolite,
+             sample_size = n)
+    
+    results_df <- bind_rows(results_df, results)
+    
+    
+    ##### STRATIFIED ANALYSIS BY SEX
+    filtered_data_male <- filtered_data %>% filter(e3_sex == "male")
+    filtered_data_female <- filtered_data %>% filter(e3_sex == "female")
+    
+    # Number of participants with non NA values for that outcome (= sample size)
+    n_male <- nrow(filtered_data_male)
+    n_female <- nrow(filtered_data_female)
+    
+    
+    model_male <- lm(formula, data = filtered_data_male)
+    model_female <- lm(formula, data = filtered_data_female)
+    
+    results_male <- tidy(model_male) %>%
+      mutate(outcome = outcome,
+             metabolite = metabolite,
+             sample_size = n_male,
+             sex_stratification = "male")
+    
+    results_female <- tidy(model_female) %>%
+      mutate(outcome = outcome,
+             metabolite = metabolite,
+             sample_size = n_female,
+             sex_stratification = "female")
+    
+    results_male_df <- bind_rows(results_male_df, results_male)
+    results_female_df <- bind_rows(results_female_df, results_female)
+    
+    
+  }
+}
+
+
+results_df <- results_df %>% select(outcome, metabolite, everything())
+
+# 95% confidence interval
+results_df$CI_lower <- results_df$estimate - 1.96 * results_df$std.error
+results_df$CI_upper <- results_df$estimate + 1.96 * results_df$std.error
+
+results_df$corrected_pval_thresh <- corrected_pval_thresh
+
+
+results_male_df$CI_lower <- results_male_df$estimate - 1.96 * results_male_df$std.error
+results_male_df$CI_upper <- results_male_df$estimate + 1.96 * results_male_df$std.error
+
+results_female_df$CI_lower <- results_female_df$estimate - 1.96 * results_female_df$std.error
+results_female_df$CI_upper <- results_female_df$estimate + 1.96 * results_female_df$std.error
+
+results_sex_stratification <- bind_rows(results_male_df, results_female_df)
+results_sex_stratification <- results_sex_stratification %>% select(outcome, metabolite, everything())
+
+
+results_df <- results_df %>% filter(term %in% metabolites)
+results_sex_stratification <- results_sex_stratification %>% filter(term %in% metabolites)
+
+
+outcome_mapping <- c("hs_dnumeros2" = "Working memory (2-back test)",
+                     "hs_dnumeros3" = "Working memory (3-back test)",
+                     "hs_hitrtse" = "Inattention", 
+                     "hs_correct_raven" = "Fluid intelligence",
+                     "hs_Gen_Int_zscores" = "Internalizing scale",
+                     "hs_Gen_Ext_zscores" = "Externalizing scale",
+                     "hs_Gen_Tot_zscores" = "Total scale",
+                     "hs_ADHD_raw_zscores" = "ADHD")
+
+results_df$outcome_name <- outcome_mapping[results_df$outcome]
+results_sex_stratification$outcome_name <- outcome_mapping[results_sex_stratification$outcome]
+
+results_df <- results_df %>% select(outcome_name, everything())
+results_sex_stratification <- results_sex_stratification %>% select(outcome_name, everything())
+
+
+# MAIN
+write.csv(results_df, file = "results/EWAS_results_MAIN.csv", row.names=FALSE)
+write.csv(results_sex_stratification, file = "results/EWAS_sex_stratification_MAIN.csv", row.names=FALSE)
+
+# FU (Further adjusted analysis)
+# write.csv(results_df, file = "results/EWAS_results_FU.csv", row.names=FALSE)
+# write.csv(results_sex_stratification, file = "results/EWAS_sex_stratification_FU.csv", row.names=FALSE)
+
