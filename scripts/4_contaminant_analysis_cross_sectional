@@ -1,0 +1,334 @@
+# =====================================================================================================================================================================
+# Explore the potential mediating effect of TMAO on the association between contaminants and neurodevelopmental outcomes
+# Purpose: 
+# - Linear regression models to study the association between As, Hg, PFOS, PFUNDA and each neurodevelopmental outcome, stratifying the analysis by tertiles of TMAO. 
+# - Interaction analysis between TMAO levels and each contaminant
+# =====================================================================================================================================================================
+
+
+library(dplyr)
+library(broom)
+library(ggplot2)
+library(readxl)
+library(lmtest)
+
+
+# Load data
+load("data/merg_neuro_metab_SUB_exp4.RData")
+
+# Load contaminant data
+load("data/20180212_v2_3_ImputedDataset_20x10_AllDataFrame.Rdata")
+original_data<-subset(imp.df.v2.3,.imp==1)
+
+# Load PUFA variable
+pufa <- read_excel("data/pufa.xlsx")
+pufa <- as.data.frame(pufa)
+pufa <- pufa %>% rename("PUFA" = "PUFA..PC.")
+
+
+outcomes<-c("hs_dnumeros2",
+            "hs_dnumeros3",
+            "hs_hitrtse",
+            "hs_correct_raven",
+            "hs_Gen_Int",
+            "hs_Gen_Ext",
+            "hs_Gen_Tot",
+            "hs_ADHD_raw")
+
+# As, Hg PFUNDA and PFOS (in childhood)
+cols <- c("hs_as_c_Log2","hs_hg_c_Log2","hs_pfunda_c_Log2","hs_pfos_c_Log2","HelixID"))
+original_data_cont<-original_data %>% select(cols)
+
+# Merge data with contaminant data
+merg_neuro_metab_SUB_exp5<-merge(merg_neuro_metab_SUB_exp4, original_data_cont, by="HelixID", all.x=T)
+
+
+### make z-scores to the sqrt outcomes
+# ADHD
+mean_adhd_sqrt<-mean(merg_neuro_metab_SUB_exp5$hs_ADHD_raw_sqrt,na.rm=T)
+SD_adhd_sqrt<-sd(merg_neuro_metab_SUB_exp5$hs_ADHD_raw_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp5$hs_ADHD_raw_zscores<-(merg_neuro_metab_SUB_exp5$hs_ADHD_raw_sqrt-mean_adhd_sqrt)/SD_adhd_sqrt
+
+# Gen Int
+mean_GENINT_sqrt<-mean(merg_neuro_metab_SUB_exp5$hs_Gen_Int_sqrt,na.rm=T)
+SD_GENINT_sqrt<-mean(merg_neuro_metab_SUB_exp5$hs_Gen_Int_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp5$hs_Gen_Int_zscores<-(merg_neuro_metab_SUB_exp5$hs_Gen_Int_sqrt-mean_GENINT_sqrt)/SD_GENINT_sqrt
+
+# Gen Ext
+mean_GENext_sqrt<-mean(merg_neuro_metab_SUB_exp5$hs_Gen_Ext_sqrt,na.rm=T)
+SD_GENext_sqrt<-mean(merg_neuro_metab_SUB_exp5$hs_Gen_Ext_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp5$hs_Gen_Ext_zscores<-(merg_neuro_metab_SUB_exp5$hs_Gen_Ext_sqrt-mean_GENext_sqrt)/SD_GENext_sqrt
+
+# Gen Tot
+mean_GENTot_sqrt<-mean(merg_neuro_metab_SUB_exp5$hs_Gen_Tot_sqrt,na.rm=T)
+SD_GETot_sqrt<-mean(merg_neuro_metab_SUB_exp5$hs_Gen_Tot_sqrt,na.rm=T)
+merg_neuro_metab_SUB_exp5$hs_Gen_Tot_zscores<-(merg_neuro_metab_SUB_exp5$hs_Gen_Tot_sqrt-mean_GENTot_sqrt)/SD_GETot_sqrt
+
+
+# Data to use for linear regression
+data <- merg_neuro_metab_SUB_exp5
+
+# Transform the continuous variable "Trimethylamine_oxide" into a categorical variable with three levels (tertiles)
+data <- data %>% mutate(TMAO_factors = ntile(Trimethylamine_oxide, 3), TMAO_factors = factor(TMAO_factors))
+
+
+# Add PUFA data
+data <- merge(data, pufa, by = "HelixID", all.x = TRUE)
+
+
+# Cognitive outcomes
+outcomes_trans<-c(outcomes[1:5],paste0(outcomes[6:9],"_zscores"))
+# Contaminants
+contaminants <- c("hs_as_c_Log2","hs_hg_c_Log2","hs_pfunda_c_Log2","hs_pfos_c_Log2")
+
+# Confounders
+confounders <- c("hs_child_age_days", "h_edumc", "Centre")
+
+# Confounders further adjusted
+#confounders<-c("hs_child_age_days", "h_edumc", "Centre", "PUFA")
+
+
+results_df <- data.frame()
+results_stratified_df <- data.frame()
+
+# Iterate on cognitive outcomes
+for (outcome in outcomes_trans) {
+  print(paste0("The outcome is: ",outcome))
+  
+  # Iterate on contaminants
+  for (contaminant in contaminants) {
+    print(paste0("The contaminant is ", contaminant))
+    
+    # Remove participants with NA value in the outcome
+    filtered_data <- data %>%
+      filter(!is.na(.[[outcome]]))
+    
+    # Number of participants with non NA values for that outcome (= sample size)
+    n <- nrow(filtered_data)
+    
+    # MODEL 1: with interation term between TMAO_factors and contaminant
+    formula_1 <- paste(outcome, "~", contaminant, "+ TMAO_factors +", paste(confounders, collapse = "+"), "+ TMAO_factors:", contaminant)
+    model_1 <- lm(formula_1, data = filtered_data)
+    results_1 <- tidy(model_1) %>%
+      mutate(outcome = outcome,
+             contaminant = contaminant,
+             interaction_term = TRUE,
+             sample_size = n)
+    
+                           
+    # MODEL 2 witout interation term between TMAO_factors and contaminant
+    formula_2 <- paste(outcome, "~", contaminant, "+ TMAO_factors +", paste(confounders, collapse = "+"))
+    model_2 <- lm(formula_2, data = filtered_data)
+    results_2 <- tidy(model_2) %>%
+      mutate(outcome = outcome,
+             contaminant = contaminant,
+             interaction_term = FALSE,
+             sample_size = n)
+    
+    # LIKELIHOOD RATIO TEST BETWEEN MODELS WITH/WITHOUT INTERACTION TERM
+    lrt <- lrtest(model_1, model_2)
+    pval <- lrt$'Pr(>Chisq)'[2]
+    
+    results_1$pval_LRT <- pval
+    results_2$pval_LRT <- pval
+    
+    results_df <- bind_rows(results_df, results_1, results_2)
+    
+    
+    #### Analysis stratified by tertiles of TMAO levels ####
+    
+    low_df <- filtered_data %>% filter(TMAO_factors == 1)
+    n_low <- nrow(low_df)
+    
+    medium_df <- filtered_data %>% filter(TMAO_factors == 2)
+    n_medium <- nrow(medium_df)
+    
+    high_df <- filtered_data %>% filter(TMAO_factors == 3)
+    n_high <- nrow(high_df)
+    
+    
+    formula <- paste(outcome, "~", contaminant, " + ", paste(confounders, collapse = " + "))
+    
+    model_low <- lm(formula, data = low_df)
+    model_medium <- lm(formula, data = medium_df)
+    model_high <- lm(formula, data = high_df)
+    model_all <- lm(formula, data = filtered_data)
+    
+    results_low <- tidy(model_low) %>%
+      mutate(outcome = outcome,
+             contaminant = contaminant,
+             sample_size = n_low,
+             TMAO_level = "low")
+    
+    results_medium <- tidy(model_medium) %>%
+      mutate(outcome = outcome,
+             contaminant = contaminant,
+             sample_size = n_medium,
+             TMAO_level = "medium")
+
+    results_high <- tidy(model_high) %>%
+      mutate(outcome = outcome,
+             contaminant = contaminant,
+             sample_size = n_high,
+             TMAO_level = "high")
+    
+    results_all <- tidy(model_all) %>% 
+      mutate(outcome = outcome,
+             contaminant = contaminant,
+             sample_size = nrow(filtered_data),
+             TMAO_level = "all")
+    
+    results_stratified_df <- bind_rows(results_stratified_df, results_low, results_medium, results_high, results_all)
+    
+  }
+}
+
+results_df <- results_df %>%
+  select(outcome, contaminant, interaction_term, everything())
+
+# 95% confidence interval
+results_df$CI_lower <- results_df$estimate - 1.96 * results_df$std.error
+results_df$CI_upper <- results_df$estimate + 1.96 * results_df$std.error
+
+results_stratified_df <- results_stratified_df %>%
+  select(outcome, contaminant, TMAO_level, everything())
+
+# 95% confidence interval
+results_stratified_df$CI_lower <- results_stratified_df$estimate - 1.96 * results_stratified_df$std.error
+results_stratified_df$CI_upper <- results_stratified_df$estimate + 1.96 * results_stratified_df$std.error
+
+
+tmao_levels <- c("low", "medium", "high", "all")
+results_stratified_df$TMAO_level <- factor(results_stratified_df$TMAO_level, levels = tmao_levels)
+
+
+
+write.csv(results_stratified_df, file="results/results_TMAO_stratified_main.csv", row.names=FALSE)
+
+
+
+### VISUALIZATION 
+# For one outcome
+
+cognitive_outcomes <- unique(results_df$outcome)
+
+for (cognitive_outcome in cognitive_outcomes) {
+  df <- results_df %>% filter(outcome == 	cognitive_outcome)
+  df <- df %>% filter(term %in% contaminants)
+  plot_name <- paste0("coeff_plot_", cognitive_outcome)
+  
+  max_abs <- max(abs(c(df$estimate, df$CI_lower, df$CI_upper)))
+  
+  coeff_plot <- ggplot(df, aes(x=term, y = estimate, ymin = CI_lower, ymax = CI_upper, color = interaction_term)) +
+    ggtitle(cognitive_outcome) +
+    geom_point(size = 3, position = position_dodge(width = 0.5)) +
+    geom_errorbar(position = position_dodge(width = 0.5), width = 0.2) +
+    labs(x = "Contaminant", y = "Estimate", color = "Interaction term\nTMAO/contaminant") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+          plot.title = element_text(size = 12, hjust = 0.5)) +
+    coord_cartesian(ylim = c(-max_abs, max_abs)) 
+
+}
+
+
+
+
+
+
+tmao_colors <- c("low" = "blue", "medium" = "purple", "high" = "red", "all" = "black")
+
+# Create a mapping between encoded names and proper names
+contaminant_mapping <- c("hs_hg_c_Log2" = "Mercury",
+                         "hs_as_c_Log2" = "Arsenic",
+                         "hs_pfos_c_Log2" = "PFOS",
+                         "hs_pfunda_c_Log2" = "PFUNDA")
+outcome_mapping <- c("hs_dnumeros2" = "Working memory (2-back test)",
+                     "hs_dnumeros3" = "Superior working memory (3-back test)",
+                     "hs_hitrtse" = "Inattention",
+                     "hs_correct_raven" = "Fluid intelligence",
+                     "hs_Gen_Int_zscores" = "Internalizing scale",
+                     "hs_Gen_Ext_zscores" = "Externalizing scale",
+                     "hs_Gen_Tot_zscores" = "Total scale",
+                     "hs_ADHD_raw_zscores" = "ADHD")
+                         
+
+results_stratified_df$function_assessed <- outcome_mapping[results_stratified_df$outcome]
+
+for (cognitive_outcome in cognitive_outcomes) {
+  
+  
+  df <- results_stratified_df %>% filter(outcome == cognitive_outcome)
+  df <- df %>% filter(contaminant %in% c("hs_hg_c_Log2", "hs_as_c_Log2"))
+  df <- df %>% filter(term %in% contaminants)
+  df$contaminant_name <- contaminant_mapping[df$term]
+  
+  # We add the pvalue of the Likelihood Ratio Test to the dataframe
+  # We retrieve the value from the interaction term analysis results
+  df2 <- results_df %>% 
+    distinct(outcome, contaminant, .keep_all = TRUE) %>% 
+    select(outcome, contaminant, pval_LRT)
+  
+  # We add it to df by merging df and df2 by common outcome and term/contaminant
+  df <- merge(df, df2, by.x = c("outcome", "term"), by.y = c("outcome", "contaminant"), all.x = TRUE)
+  
+  # We add a star indicating LRT significance, for plotting
+  #df$contaminant_name <- ifelse(df$pval_LRT < 0.05, paste0(df$contaminant_name, " *"), df$contaminant_name)
+  
+  plot_name <- paste0("coeff_plot_stratified_", cognitive_outcome)
+  
+  max_abs <- max(abs(c(df$estimate, df$CI_lower, df$CI_upper)))
+  
+  coeff_plot <- ggplot(df, aes(x=contaminant_name, y = estimate, ymin = CI_lower, ymax = CI_upper, color = TMAO_level)) +
+    ggtitle(unique(df$function_assessed)) +
+    geom_point(size = 3, position = position_dodge(width = 0.5)) +
+    geom_errorbar(position = position_dodge(width = 0.5), width = 0.2) +
+    labs(x = "Contaminant", y = "Estimate", color = "TMAO level") +
+    scale_color_manual(values = tmao_colors) + 
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black", linewidth = 0.5) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5, size = 15),
+          axis.text.y = element_text(size = 15),
+          axis.title.x = element_text(size = 15),
+          axis.title.y = element_text(size = 15),
+          legend.text = element_text(size = 15),
+          legend.title = element_text(size = 16),
+          plot.title = element_text(size = 19, hjust = 0.5)) +
+    coord_cartesian(ylim = c(-max_abs, max_abs)) 
+  
+  
+  # PUFA ADJUSTED
+  # ggsave(filename = paste0("results/", plot_name, ".png"),
+  #        plot = coeff_plot, bg="white", width=11, height=8)
+
+  #NOT PUFA ADJUSTED
+  ggsave(filename = paste0("results/", plot_name, ".pdf"),
+         plot = coeff_plot, bg="white", width=8, height=6)
+  
+  ggsave(filename = paste0("results/", plot_name, ".png"),
+         plot = coeff_plot, bg="white", width=8, height=6)
+  
+
+  plot(coeff_plot)
+}
+
+
+##### SCATTERPLOTS Trimethylamine_oxide VS Contaminant
+custom_colors <- c("1" = "blue", "2" = "purple", "3" = "red")
+for (contaminant in contaminants) {
+
+    plot_name <- paste0("scatterplot_", contaminant, "_vs_TMAO.png")
+    
+    plot_title <- paste0("Scatterplot of ", contaminant, " vs TMAO")
+    
+    scatterplot <- ggplot(data, aes_string(x=contaminant, y="Trimethylamine_oxide", color = "TMAO_factors")) +
+                    geom_point() +
+                    scale_color_manual(values = custom_colors, labels = c("1" = "Low", "2" = "Medium", "3" = "High")) + 
+                    theme_minimal() +
+                    labs(color = "TMAO level") +
+                    theme(plot.title = element_text(plot_title))
+    ggsave(filename = paste0("results/", plot_name), 
+       plot = scatterplot, bg="white")
+}
+
