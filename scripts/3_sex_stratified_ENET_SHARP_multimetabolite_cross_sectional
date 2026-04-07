@@ -1,0 +1,403 @@
+# ===================================================================================================================================================
+# Sex stratified epidemiological associations between childhood urinary metabolites (cross-sectional) and child behavioural problems and cognition
+# Purpose: Generate sex stratified results table for Elastic Net + SHARP between childhood urinary metabolites and neurodevelopmental outcomes
+# ===================================================================================================================================================
+
+
+library(sharp)
+library(bumphunter)
+library(limma)
+library(minfi)
+library(RColorBrewer)
+library(matrixStats)
+library(minfiData)
+library(stringr)
+library(wateRmelon)
+library(plyr)
+library(ggplot2)
+library(reshape2)
+library(GOplot)
+library(snpStats)
+library(glmnet)
+library(dplyr)
+library(readxl)
+library(fastDummies)
+
+# Either "Male" or "Female"
+setwd("results/sex stratification analysis/Male/")
+
+load("data/merg_neuro_metab_SUB_exp4.RData")
+pufa <- read_excel("data/pufa.xlsx")
+pufa <- as.data.frame(pufa)
+
+outcomes<-c("hs_dnumeros2",
+            "hs_dnumeros3", 
+            "hs_hitrtse", 
+            "hs_hitrt2_mean", 
+            "hs_correct_raven", 
+            "hs_Gen_Int", 
+            "hs_Gen_Ext",
+            "hs_Gen_Tot", 
+            "hs_ADHD_raw") 
+
+mean_gen_ext_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Ext_sqrt,na.rm=T)
+SD_gen_ext_sqrt<-sd(merg_neuro_metab_SUB_exp4$hs_Gen_Ext_sqrt,na.rm=T)
+
+mean_gen_int_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Int_sqrt,na.rm=T)
+SD_gen_int_sqrt<-sd(merg_neuro_metab_SUB_exp4$hs_Gen_Int_sqrt,na.rm=T)
+
+mean_gen_tot_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_Gen_Tot_sqrt,na.rm=T)
+SD_gen_tot_sqrt<-sd(merg_neuro_metab_SUB_exp4$hs_Gen_Tot_sqrt,na.rm=T)
+
+merg_neuro_metab_SUB_exp4$hs_Gen_Ext_zscores<-(merg_neuro_metab_SUB_exp4$hs_Gen_Ext_sqrt-mean_gen_ext_sqrt)/SD_gen_ext_sqrt
+merg_neuro_metab_SUB_exp4$hs_Gen_Int_zscores<-(merg_neuro_metab_SUB_exp4$hs_Gen_Int_sqrt-mean_gen_int_sqrt)/SD_gen_int_sqrt
+merg_neuro_metab_SUB_exp4$hs_Gen_Tot_zscores<-(merg_neuro_metab_SUB_exp4$hs_Gen_Tot_sqrt-mean_gen_tot_sqrt)/SD_gen_tot_sqrt
+
+mean_adhd_sqrt<-mean(merg_neuro_metab_SUB_exp4$hs_ADHD_raw_sqrt,na.rm=T)
+SD_adhd_sqrt<-sd(merg_neuro_metab_SUB_exp4$hs_ADHD_raw_sqrt,na.rm=T)
+
+merg_neuro_metab_SUB_exp4$hs_ADHD_raw_zscores<-(merg_neuro_metab_SUB_exp4$hs_ADHD_raw_sqrt-mean_adhd_sqrt)/SD_adhd_sqrt
+
+outcomes_trans<-c(outcomes[1:5],paste0(outcomes[6:9],"_zscores"))
+
+
+# urinary metabolites in childhood
+exposures<-colnames(merg_neuro_metab_SUB_exp4)[26:70]
+
+# Covariates: child age, maternal education, cohort 
+covariates<-"hs_child_age_days +h_edumc +Centre"
+covariates_fu<-"hs_child_age_days +h_edumc +Centre + PUFA" ## PUFA = sum of poly-unsaturated fatty acids, marker of fish intake
+
+
+## SEX STRATIFICATION
+# Select sex: either "male" or "female"
+merg_neuro_metab_SUB_exp4 <- merg_neuro_metab_SUB_exp4 %>% dplyr::filter(e3_sex == "male")
+
+
+merg_neuro_metab_SUB_exp5<-merge(merg_neuro_metab_SUB_exp4,pufa, by="HelixID", all.x=T)
+colnames(merg_neuro_metab_SUB_exp5)[82]<-"PUFA"
+
+
+# Create dummy variables for centre (cohort), education and sex
+merg_neuro_metab_SUB_exp5$e3_sex <- ifelse(merg_neuro_metab_SUB_exp5$e3_sex == "male", 0, 1)
+
+
+merg_neuro_metab_SUB_exp5 <- dummy_cols(merg_neuro_metab_SUB_exp5 , select_columns = c("Centre","h_edumc"),remove_selected_columns = TRUE)
+
+
+merg_neuro_metab_SUB_exp5$h_edumc_Low[is.na(merg_neuro_metab_SUB_exp5$h_edumc_Low)]<-0
+merg_neuro_metab_SUB_exp5$h_edumc_Medium[is.na(merg_neuro_metab_SUB_exp5$h_edumc_Medium)]<-0
+merg_neuro_metab_SUB_exp5$h_edumc_High[is.na(merg_neuro_metab_SUB_exp5$h_edumc_High)]<-0
+
+
+for(o in outcomes_trans[1:9]){
+  
+  
+  merg_neuro_metab_SUB_exp4_no_miss_outcome<-subset(merg_neuro_metab_SUB_exp5, !is.na(merg_neuro_metab_SUB_exp5[,o]) & !is.na(merg_neuro_metab_SUB_exp5$hs_child_age_days) & !is.na(merg_neuro_metab_SUB_exp5$PUFA))
+  
+  
+  #80 PUFA
+  pos_covars<-c(12:13,15,80,81:89)
+  
+  covars <- data.frame(merg_neuro_metab_SUB_exp4_no_miss_outcome[,pos_covars])
+  # Main analysis is not PUFA adjusted + we remove sex and BMI from confounders
+  covars <- covars %>% dplyr::select(-c("e3_sex","hs_zbmi","PUFA"))
+  # CHECK COVARIATES
+  print("THE COVARIATES NAMES ARE:")
+  print(colnames(covars))
+  names(covars)
+  
+  
+  str(covars)
+  
+  predictors<- list()
+  
+  predictors[[1]] <- merg_neuro_metab_SUB_exp4_no_miss_outcome[24:68]
+  
+  dim(predictors[[1]])
+  
+  
+  gc()
+  
+  predictors
+  
+  for (i in 1:ncol(predictors[[1]])){
+    if (class(predictors[[1]][,i])=="character") {
+      print(names(predictors[[1]])[i])
+      print(table(predictors[[1]][,i]))
+    }
+  }
+  
+ 
+  preds <- data.frame(cbind(predictors[[1]],covars[,-8])) # REMOVING RHEA AT 8TH POSITION
+  
+  for (i in 1:ncol(preds)){
+    if (class(preds[,i])=="character") {
+      print(names(preds)[i])
+      print(table(preds[,i]))
+    }
+  }
+  
+  #We center and scale our pred data (leaving appart categorical variables with three or less categories, which will not be standardized)
+  preds[,unlist(lapply(preds, function (x) { length(table(x))>3}), use.names = FALSE) ] <- scale(preds[,unlist(lapply(preds, function (x) { length(table(x))>3}), use.names = FALSE) ],center = T,scale = T)
+  
+  #We generate the sequence for defining which predictors will be penalized and which not (confounders)
+  
+  #NORMAL ADJUSTMENT RHEA OUT DUMMY POS 8
+  penalty <- c(rep(1, ncol(predictors[[1]])),rep(0, ncol(covars[,-8]))) 
+  length(penalty)
+  
+  #We write a function for the resampling strategy (the outcome is gaussian, so we only care about the proportion of cohort)
+  BalancedResampling_gaus <- function(data, tau, Z, ...) {
+    s <- NULL
+    formule <- list()
+    for (i in 1:(length(names(Z)))){
+      formule[[i]] <- paste("c(s, sample(which(",paste(paste0("Z$",names(Z)[i]),"== 1)"),", size = tau * sum(",paste(paste0("Z$",names(Z)[i]),"== 1)"),"))",sep="")
+    }
+    for (i in 1:(length(names(Z)))) {
+      s <- eval(parse(text=formule[[i]]))
+    }
+    return(s)
+  }
+  #With the next lines we show that it effectively works
+  ids <-  BalancedResampling_gaus(data=merg_neuro_metab_SUB_exp4_no_miss_outcome$hs_hitrtse, tau=0.8, Z=covars[,c("Centre_BIB","Centre_EDEN","Centre_KANC","Centre_MOBA","Centre_SAB")])
+  lapply(data.frame(covars[,c("Centre_BIB","Centre_EDEN","Centre_KANC","Centre_MOBA","Centre_SAB")]),function (x) { prop.table(table(x))})
+  lapply(data.frame(covars[ids,c("Centre_BIB","Centre_EDEN","Centre_KANC","Centre_MOBA","Centre_SAB")]),function (x) {  prop.table(table(x))})
+  lapply(data.frame(covars[-ids,c("Centre_BIB","Centre_EDEN","Centre_KANC","Centre_MOBA","Centre_SAB")]),function (x) {  prop.table(table(x))})
+
+  
+  COHORTs <- covars[,c("Centre_BIB","Centre_EDEN","Centre_KANC","Centre_MOBA","Centre_SAB")]
+  
+  
+  
+  
+  results_stab <- list()
+  
+  
+  m<-1
+  
+  print(system.time({
+    results_stab[[m]] <- VariableSelection(
+      xdata = preds, ydata = merg_neuro_metab_SUB_exp4_no_miss_outcome[,o],
+      family = "gaussian", penalty.factor = penalty,
+      Lambda = LambdaSequence(lmax = 10, lmin = 1e-4, cardinal = 1000),
+      seed = c(12345),  resampling = BalancedResampling_gaus, Z = COHORTs, tau=0.8, K = 100, n_cat=3 , pi_list=seq(0.51, 0.99, by = 0.01), beep=NULL, verbose=TRUE, n_cores=1
+    )
+  }))
+  
+  results_stab
+  
+  names(preds)
+  length(penalty)
+  table(penalty)  ### penalty==0 then the covariates were forced (dummy or numeric)
+  
+  s<-getwd()
+  
+  # Saving outputs
+  saveRDS(results_stab, paste0(s,"/RESULTS_ENET_lasso_MAIN_",o,".rds"))
+  # results_stab[[1]]$Betaselprop
+  results_stab <- readRDS( paste0(s,"/RESULTS_ENET_lasso_MAIN_",o,".rds"))
+  
+  
+  
+  # Stability selection LASSO results
+  stab_m1 <- results_stab[[1]]
+  class(stab_m1) <- "variable_selection"
+  selected_m1 <- SelectedVariables(stab_m1)
+  selprop_m1 <- SelectionProportions(stab_m1)
+  saveRDS(stab_m1, paste0(s,"/selection_proportions_stability_lasso_MAIN_",o,".rds"))
+  
+  
+  
+  ###################################################################################################
+  ################################# Exploring outputs
+  ###################################################################################################
+  
+  print(paste0("Model: ",o))
+  png(paste0("Calibraiton_plot_lasso_MAIN_",o,".png"))
+  CalibrationPlot(results_stab[[1]]) #creo que ha salido bien
+  dev.off()
+  length(which(Stable(results_stab[[1]])!=0))
+  which(Stable(results_stab[[1]])!=0)
+  
+  
+  # Beta coefficients MODELO 1
+  argmax_id <- ArgmaxId(results_stab[[1]])[1]
+  tmp <- t(results_stab[[1]]$Beta[argmax_id, colnames(results_stab[[1]]$selprop), ])
+  beta_m1 <- apply(tmp, 2, FUN = function(x) {
+    mean(x[x != 0])
+  })
+  
+  
+  results_stab[[1]]$Beta
+  
+  
+  
+  ## M1
+  mat <- cbind(sort(selprop_m1[selected_m1 == 1], decreasing = TRUE))
+  # mat <- cbind(annot[rownames(mat), "alt.name"], mat)
+  mat <- cbind(mat, formatC(beta_m1[rownames(mat)], format = "f", digits = 2))
+  # colnames(mat) <- c("alt.name", "prop", "beta_mean")
+  colnames(mat) <- c( "prop", "beta_mean")
+  write.csv2(mat,
+             row.names = TRUE, col.names = TRUE, quote = FALSE,
+             paste0(s,"/Summary_stability_lasso_MAIN_",o,".csv")
+  )
+  
+  ###################### with ELASTIC NET ##########################
+  
+  
+  results_stab <- list()
+  
+  m<-1
+  
+
+  
+  TuneElasticNet <- function(xdata, ydata, family, alpha) {
+    stab <- VariableSelection(
+      xdata = xdata, ydata = ydata,
+      family = family, alpha = alpha, verbose = FALSE
+    )
+    return(max(stab$S, na.rm = TRUE))
+  }
+  myopt <- optimise(TuneElasticNet,
+                    lower = 0.1, upper = 1, maximum = TRUE,
+                    xdata = preds, ydata = merg_neuro_metab_SUB_exp4_no_miss_outcome[,o],
+                    family = "gaussian"
+  )
+  stab <- VariableSelection(
+    xdata = preds, ydata = merg_neuro_metab_SUB_exp4_no_miss_outcome[,o],
+    family = "gaussian", alpha = myopt$maximum, penalty.factor = penalty,seed = c(12345),  resampling = BalancedResampling_gaus, Z = COHORTs, tau=0.8, K = 100, n_cat=3 , pi_list=seq(0.5, 0.99, by = 0.01), beep=NULL, verbose=TRUE, n_cores=1
+  )
+
+  summary(stab)
+ 
+  enet <- SelectedVariables(stab)
+  enet
+  
+  
+  
+  stab2 <- VariableSelection(
+    xdata = preds, ydata = merg_neuro_metab_SUB_exp4_no_miss_outcome[,o],
+    family = "gaussian", alpha = myopt$maximum, Lambda = LambdaSequence(lmax = 10, lmin = 1e-4, cardinal = 1000), penalty.factor = penalty,seed = c(12345),  resampling = BalancedResampling_gaus, Z = COHORTs, tau=0.8, K = 100, n_cat=3 , pi_list=seq(0.5, 0.99, by = 0.01), beep=NULL, verbose=TRUE, n_cores=1
+  )
+  
+  summary(stab2)
+  
+  enet2 <- SelectedVariables(stab2)
+  enet2
+  
+  
+  results_stab[[m]] <-stab
+  results_stab
+  
+  # Saving outputs
+  s<-"results"
+  
+  saveRDS(results_stab, paste0(s,"/RESULTS_ENET_MAIN_",o,".rds"))
+  # results_stab[[1]]$Betaselprop
+  results_stab <- readRDS( paste0(s,"/RESULTS_ENET_MAIN_",o,".rds"))
+  
+  
+  
+  # Stability selection ENET results
+  stab_m1 <- results_stab[[1]]
+  class(stab_m1) <- "variable_selection"
+  selected_m1 <- SelectedVariables(stab_m1)
+  selprop_m1 <- SelectionProportions(stab_m1)
+  saveRDS(stab_m1, paste0(s,"/selection_proportions_stability_MAIN_",o,".rds"))
+  
+  
+  
+  ###################################################################################################
+  ################################# Exploring outputs
+  ###################################################################################################
+  
+  print(paste0("Model: ",o))
+  
+  png(paste0("Calibration_plot_enet_MAIN_",o,".png"))
+  CalibrationPlot(results_stab[[1]]) #creo que ha salido bien
+  dev.off()
+  
+  length(which(Stable(results_stab[[1]])!=0))
+  which(Stable(results_stab[[1]])!=0)
+  
+  
+  # Beta coefficients MODELO 1
+  argmax_id <- ArgmaxId(results_stab[[1]])[1]
+  tmp <- t(results_stab[[1]]$Beta[argmax_id, colnames(results_stab[[1]]$selprop), ])
+  beta_m1 <- apply(tmp, 2, FUN = function(x) {
+    mean(x[x != 0])
+  })
+  length(beta_m1)
+  beta_m1
+  head(beta_m1)
+  
+  results_stab[[1]]$Beta
+  
+  ########### THESE ARE RESULTS WITH SCALED PREDICTORS
+  
+  
+  ## M1
+  mat <- cbind(sort(selprop_m1[selected_m1 == 1], decreasing = TRUE))
+  # mat <- cbind(annot[rownames(mat), "alt.name"], mat)
+  mat <- cbind(mat, formatC(beta_m1[rownames(mat)], format = "f", digits = 2))
+  # colnames(mat) <- c("alt.name", "prop", "beta_mean")
+  colnames(mat) <- c( "prop", "beta_mean")
+  # UNCOMMENT!
+  write.csv2(mat,
+             row.names = TRUE, col.names = TRUE, quote = FALSE,
+             paste0(s,"/Summary_stability_ENET_MAIN_",o,".csv")
+  )
+  
+  mat
+  
+  ENET_pred_namesselect<-names(selprop_m1[selected_m1 == 1])
+  
+  # MAIN ANALYSIS
+  covariates_dum<-"hs_child_age_days +h_edumc_Low + h_edumc_Medium + h_edumc_High +Centre_BIB+ Centre_EDEN+ Centre_KANC+ Centre_MOBA+ Centre_RHEA+ Centre_SAB"
+  
+  # PUFA FURTHER ADJUSTED
+  # covariates_dum<-"hs_child_age_days +e3_sex +h_edumc_Low + h_edumc_Medium + h_edumc_High + hs_zbmi +PUFA +Centre_BIB+ Centre_EDEN+ Centre_KANC+ Centre_MOBA+ Centre_RHEA+ Centre_SAB"
+  
+  
+  if(length(ENET_pred_namesselect)>0){
+    
+    multi_exposures<-paste(ENET_pred_namesselect,collapse="+")
+    
+    m1_multiexp=lm(as.formula(paste0(o," ~ ", multi_exposures, "+",covariates_dum)),data=merg_neuro_metab_SUB_exp4_no_miss_outcome)
+    
+  
+    write.csv(ENET_pred_namesselect,file=paste0("results/ENET_res_var_names_select_vs2_MAIN_",o,".csv"))
+    
+    extract_sum<-summary(m1_multiexp)
+    
+    m1_multiexp.extract<-extract_sum[[4]]
+    
+    
+    
+    est <- cbind(Estimate = coef(m1_multiexp), confint(m1_multiexp))
+    est<-as.data.frame(est)
+    est<-subset(est,!is.na(est$Estimate))
+    
+
+    print("Running this part")
+    p_val <- summary(m1_multiexp)$coefficients[, "Pr(>|t|)"]
+    p_val <- as.data.frame(p_val)
+    colnames(p_val)<-"Pr(>|t|)"                  
+    
+    results<-cbind(round(est,5), p_val)
+    results$exposures<-rownames(results)
+    rownames(results)<-NULL
+    
+    results<-results[,c(5,1:4)]
+
+    write.csv(results,file=paste0("results/results_lm_multiexp_ENET_vs2_MAIN_",o,".csv"))
+    
+  }else{
+    cat("non selected variables for outcome")
+  }
+  
+  
+}
+
