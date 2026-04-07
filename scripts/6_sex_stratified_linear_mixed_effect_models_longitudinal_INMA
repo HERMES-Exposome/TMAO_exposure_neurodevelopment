@@ -1,0 +1,1384 @@
+# ============================================================================================================================================================================================
+# Sex stratified epidemiological associations between prenatal maternal urinary metabolites (1st and 3rd trimester of pregnancy) and child behavioural problems and cognition (longitudinal)
+# Purpose: sex stratified linear mixed effect models between prenatal maternal urinary metabolites and child repeated neurodevelopmental outcomes
+# Requirements: dplyr, lmerTest, broom
+# ============================================================================================================================================================================================
+
+
+library(dplyr)
+library(lmerTest)
+library(broom)
+
+# Data files
+ADHD_df <- read.csv("data/longitudinal_merged_ADHD_df.csv")
+CBCL_df <- read.csv("data/longitudinal_merged_CBCL_df.csv")
+dnumeros_df <- read.csv("data/longitudinal_merged_dnumeros_df.csv")
+general_cognition_df <- read.csv("data/longitudinal_merged_general_cognition_df.csv")
+hitrtse_df <- read.csv("data/longitudinal_merged_hitrtse_df.csv")
+non_verbal_intelligence_df <- read.csv("data/longitudinal_merged_non_verbal_intelligence_df.csv")
+
+# Select either "Male" or "Female"
+select_sex <- function(df){
+  df <- df %>% dplyr::filter(sexo == "Male")
+  return(df)
+} 
+
+# select only one sex
+ADHD_df<- select_sex(ADHD_df)
+CBCL_df <- select_sex(CBCL_df)
+dnumeros_df <- select_sex(dnumeros_df)
+general_cognition_df <- select_sex(general_cognition_df)
+hitrtse_df <- select_sex(hitrtse_df)
+non_verbal_intelligence_df <- select_sex(non_verbal_intelligence_df)
+
+#create ratio TMA/TMAO
+create_ratio <- function(df) {
+  df$TMA_TMAO_1st<-df$trimethylamine_1st/df$TMAO_1st
+  df$TMA_TMAO_3rd<-df$trimethylamine_3rd/df$TMAO_3rd
+  return(df)
+}
+
+# Add 1st and 3rd trimester ratio TMA/TMAO to the data
+ADHD_df<- create_ratio(ADHD_df)
+CBCL_df <- create_ratio(CBCL_df)
+dnumeros_df <- create_ratio(dnumeros_df)
+general_cognition_df <- create_ratio(general_cognition_df)
+hitrtse_df <- create_ratio(hitrtse_df)
+raven_df <- create_ratio(raven_df)
+non_verbal_intelligence_df <- create_ratio(non_verbal_intelligence_df)
+
+
+# Transform the CBCL outcomes + ADHD (z score of the square root):
+CBCL_df <- CBCL_df %>% mutate(
+  Gen_Tot_scaled = scale(sqrt(CBCL_df$Gen_Tot)),
+  Gen_Ext_scaled = scale(sqrt(CBCL_df$Gen_Ext)),
+  Gen_Int_scaled = scale(sqrt(CBCL_df$Gen_Int))
+)
+
+ADHD_df <-ADHD_df %>% mutate(ADHD_scaled = scale(sqrt(ADHD_df$ADHD)))
+
+
+
+# Column names for metabolites at 1st and 3rd trimester
+metabolites_1st <- names(dnumeros_df)[grepl("_1st", names(dnumeros_df))]
+metabolites_3rd <- names(dnumeros_df)[grepl("_3rd", names(dnumeros_df))]
+
+
+prepare_confounders <- function(df) {
+  #obstetric complications: birth weight <2500gr or >4000gr or GA <37 weeks
+  df$obs_complications<-factor(ifelse((df$peso<2500 | df$peso>4000 | df$sges <37),"yes","no"))
+  
+  # transform to factors
+  df$paridad<-as.factor(df$paridad)
+  df$estudios <- as.factor(df$estudios)
+  df$season <- as.factor(df$season)
+  df$cohort <- as.factor(df$cohort)
+  df$id_inma <- as.factor(df$id_inma)
+  return(df)
+}
+
+
+
+ADHD_df<- prepare_confounders(ADHD_df)
+CBCL_df <- prepare_confounders(CBCL_df)
+dnumeros_df <- prepare_confounders(dnumeros_df)
+general_cognition_df <- prepare_confounders(general_cognition_df)
+hitrtse_df <- prepare_confounders(hitrtse_df)
+raven_df <- prepare_confounders(raven_df)
+non_verbal_intelligence_df <- prepare_confounders(non_verbal_intelligence_df)
+
+
+# Main confounders
+main_confounders <- c("estudios","season","edadm","paridad","cohort","age_neuro")
+
+# FU1 (obstetric complications)
+FU1_obstetric <- c(main_confounders, "obs_complications")
+
+# FU2 (total fish intake)
+# For 1st trimester
+FU2_fish_intake_1st <- c(main_confounders, "Pescados_gr_s12")
+# For 3rd trimester
+FU2_fish_intake_3rd <- c(main_confounders, "PescadoGr_gr_s32")
+
+def_formula <- function(outcome, metabolite) {
+  formula_main <- paste0(outcome, " ~ log2(",metabolite,") + ", paste(main_confounders, collapse = " + "), " + (1|id_inma)")
+  formula_FU1 <- paste0(outcome, " ~ log2(",metabolite,") + ", paste(FU1_obstetric, collapse = " + "), " + (1|id_inma)")
+  formula_FU2_1st <- paste0(outcome, " ~ log2(",metabolite,") + ", paste(FU2_fish_intake_1st, collapse = " + "), " + (1|id_inma)")
+  formula_FU2_3rd <- paste0(outcome, "~ log2(",metabolite,") + ", paste(FU2_fish_intake_3rd, collapse = " + "), "+ (1|id_inma)")
+  return(list(formula_main = formula_main, formula_FU1 = formula_FU1, formula_FU2_1st = formula_FU2_1st, formula_FU2_3rd = formula_FU2_3rd))
+}
+
+
+results_MAIN_df <- data.frame()
+results_FU1_df <- data.frame()
+results_FU2_df <- data.frame()
+
+i <- 0
+
+# only metabolites of interest
+metabolites_1st <-c("dimethylamine_1st", "trimethylamine_1st", "TMAO_1st", "TMA_TMAO_1st", "UA.3.21.s._1st")
+metabolites_3rd <-c("dimethylamine_3rd", "trimethylamine_3rd", "TMAO_3rd", "TMA_TMAO_3rd", "UA.3.21.s._3rd")
+
+### FOR 1st SEMESTER METABOLITES  
+for (metabolite in metabolites_1st) {
+  
+  print(i)
+  i<- i+1
+  
+  print(metabolite)
+  #######  DNUMEROS2 #####
+  outcome <- "dnumeros2"
+  data <- dnumeros_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  
+
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  
+  #### DNUMEROS 3 ######
+  
+  outcome <- "dnumeros3"
+  data <- dnumeros_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  
+  ####### HITRTSE #####
+  
+  
+  outcome <- "hitrtse"
+  data <- hitrtse_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  ####### GENERAL COGNITION - MOTOR #####
+  
+  
+  outcome <- "motor"
+  data <- general_cognition_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  
+  ####### NON VERBAL INTELLIGENCE #####
+  
+  outcome <- "non_verbal_intelligence"
+  data <- non_verbal_intelligence_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  ####### ADHD #####
+  
+  outcome <- "ADHD_scaled"
+  data <- ADHD_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  ####### CBCL Gen Tot #####
+  
+  outcome <- "Gen_Tot_scaled"
+  data <- CBCL_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  ####### CBCL Gen Ext #####
+  
+  
+  outcome <- "Gen_Ext_scaled"
+  data <- CBCL_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  ####### CBCL Gen Int #####
+  
+  
+  outcome <- "Gen_Int_scaled"
+  data <- CBCL_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_1st <- formulas$formula_FU2_1st
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_1st, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "1st",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+}
+
+
+
+###################################################################################
+
+
+### FOR 3rd SEMESTER METABOLITES  
+for (metabolite in metabolites_3rd) {
+  
+  print(i)
+  i<- i+1
+  
+  print(metabolite)
+  
+  #######  DNUMEROS2 #####
+  outcome <- "dnumeros2"
+  data <- dnumeros_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  
+  #### DNUMEROS 3 ######
+  
+  outcome <- "dnumeros3"
+  data <- dnumeros_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  
+  ####### HITRTSE #####
+  
+  
+  outcome <- "hitrtse"
+  data <- hitrtse_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  ####### GENERAL COGNITION - MOTOR #####
+  
+  
+  outcome <- "motor"
+  data <- general_cognition_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+
+  
+  ####### NON VERBAL INTELLIGENCE #####
+  
+  outcome <- "non_verbal_intelligence"
+  data <- non_verbal_intelligence_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  ####### ADHD #####
+  
+  outcome <- "ADHD_scaled"
+  data <- ADHD_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  ####### CBCL Gen Tot #####
+  
+  outcome <- "Gen_Tot_scaled"
+  data <- CBCL_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  ####### CBCL Gen Ext #####
+  
+  
+  outcome <- "Gen_Ext_scaled"
+  data <- CBCL_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+  
+  ####### CBCL Gen Int #####
+  
+  
+  outcome <- "Gen_Int_scaled"
+  data <- CBCL_df
+  
+  formulas <- def_formula(outcome, metabolite)
+  formula_main <- formulas$formula_main
+  formula_FU1 <- formulas$formula_FU1
+  formula_FU2_3rd <- formulas$formula_FU2_3rd
+  
+  print(outcome)
+  
+  # Remove participants with NA value in the outcome
+  filtered_data <- data %>%
+    filter(!is.na(.[[outcome]]))
+  
+  m <- nrow(filtered_data) # Number of timepoints
+  n <- length(unique(filtered_data$id_inma))  # Number of participants with non NA values for that outcome (= sample size)
+  
+  model_main <- lmer(formula_main, data = filtered_data) 
+  model_FU1 <- lmer(formula_FU1, data = filtered_data)
+  model_FU2 <- lmer(formula_FU2_3rd, data = filtered_data)
+  
+  CI_main <- confint(model_main)
+  CI_FU1 <- confint(model_FU1)
+  CI_FU2 <-  confint(model_FU2)
+  
+  # MAIN
+  results_MAIN<- as.data.frame(summary(model_main)$coefficients)[2,]
+  results_MAIN <-results_MAIN %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_main[4,1],
+           high_CI = CI_main[4,2])
+  
+  results_MAIN_df <- rbind(results_MAIN_df, results_MAIN)
+  
+  # FU1
+  results_FU1<- as.data.frame(summary(model_FU1)$coefficients)[2,]
+  results_FU1 <-results_FU1 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU1[4,1],
+           high_CI = CI_FU1[4,2])
+  
+  results_FU1_df <- rbind(results_FU1_df, results_FU1)
+  
+  # FU2
+  results_FU2<- as.data.frame(summary(model_FU2)$coefficients)[2,]
+  results_FU2 <-results_FU2 %>% # The second line of the model summary is the metabolite info results
+    mutate(outcome = outcome,
+           metabolite = metabolite,
+           trimester = "3rd",
+           sample_size = n,
+           n_timepoints = m,
+           low_CI = CI_FU2[4,1],
+           high_CI = CI_FU2[4,2])
+  
+  results_FU2_df <- rbind(results_FU2_df, results_FU2)
+  
+}
+
+
+results_MAIN_df <- results_MAIN_df %>% select(outcome, metabolite, everything())
+results_FU1_df <- results_FU1_df %>% select(outcome, metabolite, everything())
+results_FU2_df <- results_FU2_df %>% select(outcome, metabolite, everything())
+
+write.csv(results_MAIN_df, file = "results/male_results_MAIN_df.csv", row.names=FALSE)
+write.csv(results_FU1_df, file = "results/male_results_FU1_df.csv", row.names=FALSE)
+write.csv(results_FU2_df, file = "results/male_results_FU2_df.csv", row.names=FALSE)
