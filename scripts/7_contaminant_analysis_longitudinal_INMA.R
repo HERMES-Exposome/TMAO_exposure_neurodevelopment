@@ -15,7 +15,7 @@ CBCL_df <- read.csv("data/longitudinal_merged_CBCL_df.csv")
 dnumeros_df <- read.csv("data/longitudinal_merged_dnumeros_df.csv")
 general_cognition_df <- read.csv("data/longitudinal_merged_general_cognition_df.csv")
 hitrtse_df <- read.csv("data/longitudinal_merged_hitrtse_df.csv")
-non_verbal_intelligence_df <- read.csv("data/longitudinal_merged_non_verbal_intelligence_df.csv")
+raven_df <- read.csv("data/longitudinal_merged_raven_df.csv")
 
 
 compute_TMAO_tertiles <- function(df){
