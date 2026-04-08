@@ -3,10 +3,6 @@ This repository contains the scripts used for the study:
 
 “__*Integrated Insights into Neurodevelopmental Effects of Methylamines: A Multi-Cohort Study Combining Epidemiology and Toxicology*__”
 
-### Overview
-
-Aim:
-
 ### Repository Structure
 scripts/ → Analysis scripts
 
